@@ -1,8 +1,35 @@
+## OpenAI planning + local WAN 2.2 (current backend)
+
+MiniMax is no longer used by the application. OpenAI Platform credits fund **text planning only**. Video generation runs on your own ComfyUI / WAN checkpoint, with no OpenAI video API charge.
+
+1. Start your existing working ComfyUI WAN AIO workflow. Export it as **API format** JSON (not the normal editor workflow JSON). Save it on the GB10, for example `/workspace/flim_M/wan_api.json`.
+2. Find the positive text-prompt node ID (its API node must have `inputs.text`). Find the LoadImage node ID if using a start-image reference. Ensure the workflow produces an MP4 in a VideoCombine-style `gifs` or `videos` output.
+3. Set these variables in the shell where the studio runs:
+
+```bash
+export COMFYUI_URL=http://127.0.0.1:8188
+export COMFYUI_WORKFLOW=/workspace/flim_M/wan_api.json
+export COMFYUI_PROMPT_NODE=123       # replace with YOUR prompt node ID
+export COMFYUI_IMAGE_NODE=52        # replace with YOUR LoadImage node ID
+export OPENAI_PLANNING_MODEL=gpt-4.1-mini
+read -rsp 'OpenAI API key: ' OPENAI_API_KEY; echo
+export OPENAI_API_KEY
+python app.py
+```
+
+The OpenAI key is optional for **manual storyboards and video generation**; it is required for AI script breakdown and optional multi-shot direction refinement. If unset, the app splits longer scenes into sequential shots with simple deterministic directions.
+
+**Important limitations:** The workflow must be a working API-format ComfyUI graph. The adapter patches only one prompt node and one LoadImage node. It cannot automatically translate the normal editor workflow, assign multiple character references to custom nodes, or guarantee identity consistency. The first locked character reference is uploaded as the start image; additional reference sheets remain available in the prompt's character descriptions. The configured WAN graph controls frame count, resolution, seed and output encoding; the app does not yet automatically change those per shot. For scenes with a final shot shorter than 5 seconds, output is trimmed by FFmpeg. Review all takes before approving. No paid video fallback or automatic retry is performed.
+
+**Security:** Keep ComfyUI and the studio bound to localhost and use SSH forwarding. Never commit API keys or private workflow credentials.
+
+---
+
 # FLIM / M
 
 A local AI filmmaking studio: script → storyboard → reference-guided takes → continuity review → film.
 
-Built around **one video engine: MiniMax H3**, with MiniMax M3.1 Flash handling script and shot breakdown. No model marketplace, node graph or Node installation is required to run the app. Python runs the studio; FFmpeg assembles the footage.
+Built around local ComfyUI/WAN video generation, with optional OpenAI API script and shot planning. No model marketplace, node graph or Node installation is required to run the app. Python runs the studio; FFmpeg assembles the footage.
 
 ![Studio interface](docs/studio.jpg)
 
