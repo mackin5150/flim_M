@@ -16,7 +16,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field, ValidationError
 
 from core import Project, Scene, PRESETS, SCENE_PRESETS, compile_prompt, shot_lengths, uid, validate_locks
-from provider import MiniMax
+from local_provider import OpenAIPlanner, ComfyWAN
 import media
 
 ROOT = Path(__file__).resolve().parent
@@ -98,7 +98,7 @@ def refs(project, scene):
                     raise ValueError('Missing character reference')
                 files.append(MEDIA / ref)
     if len(files) > 9:
-        raise ValueError('H3 supports nine reference images per shot; reduce this scene’s cast or references')
+        raise ValueError('Maximum nine reference images per shot')
     return files
 
 
@@ -115,14 +115,14 @@ def advance(job):
         job.update(state='complete', file=output.name)
         put_job(job)
         return
-    provider = MiniMax()
+    provider = ComfyWAN()
     scene = Scene.model_validate(job['scene'])
     project = Project.model_validate(job['snapshot'])
     files = refs(project, scene)
     if len(job['shots']) > 1 and not all(s.get('direction') for s in job['shots']):
         job['state'] = 'submitting'
         put_job(job)
-        directions = provider.shot_directions(scene.direction, [s['duration'] for s in job['shots']])
+        directions = OpenAIPlanner().shot_directions(scene.direction, [s['duration'] for s in job['shots']]) if os.getenv('OPENAI_API_KEY') else [f'{scene.direction}\nSequential shot {i+1} of {len(job["shots"])}; render only this segment.' for i, _ in enumerate(job['shots'])]
         for shot, direction in zip(job['shots'], directions):
             shot['direction'] = direction
         job['state'] = 'queued'
@@ -146,7 +146,7 @@ def advance(job):
         if result['status'] != 'succeeded':
             return
         file = MEDIA / (uid() + '.mp4')
-        media.download(result['content']['url'], file)
+        provider.download(result['video'], file)
         pending.update(state='complete', file=file.name)
         put_job(job)
         return
@@ -214,7 +214,7 @@ async def invalid(request, error):
 @app.get('/api/status')
 def status():
     import shutil
-    return {'ai_ready': bool(os.environ.get('MINIMAX_API_KEY')), 'ffmpeg': bool(shutil.which('ffmpeg') and shutil.which('ffprobe')), 'engine': 'MiniMax-H3', 'genres': PRESETS, 'scene_types': SCENE_PRESETS}
+    return {'ai_ready': bool(os.getenv('COMFYUI_WORKFLOW') and os.getenv('COMFYUI_PROMPT_NODE')), 'planning_ready': bool(os.getenv('OPENAI_API_KEY')), 'ffmpeg': bool(shutil.which('ffmpeg') and shutil.which('ffprobe')), 'engine': 'Local WAN 2.2 via ComfyUI', 'genres': PRESETS, 'scene_types': SCENE_PRESETS}
 
 
 @app.get('/api/projects')
@@ -278,7 +278,7 @@ def plan(pid: str):
     project = get_project(pid)
     if not project.script.strip():
         raise ValueError('Paste a script first')
-    scenes = [Scene.model_validate(s) for s in MiniMax().plan(project)]
+    scenes = [Scene.model_validate(s) for s in OpenAIPlanner().plan(project)]
     if not scenes or len(scenes) > 30:
         raise ValueError('AI returned an invalid scene count')
     project.scenes = scenes
@@ -301,8 +301,8 @@ def prompt(pid: str, body: SceneRequest):
 
 @app.post('/api/projects/{pid}/generate')
 def generate(pid: str, body: SceneRequest):
-    if not os.environ.get('MINIMAX_API_KEY'):
-        raise ValueError('Set MINIMAX_API_KEY on the server before generating')
+    if not os.getenv('COMFYUI_WORKFLOW') or not os.getenv('COMFYUI_PROMPT_NODE'):
+        raise ValueError('Configure COMFYUI_WORKFLOW and COMFYUI_PROMPT_NODE before generating')
     import shutil
     if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
         raise ValueError('Install FFmpeg before generating')
@@ -316,7 +316,7 @@ def generate(pid: str, body: SceneRequest):
     job = {'id': uid(), 'kind': 'generation', 'project_id': pid, 'scene_id': scene.id,
            'state': 'queued', 'created': time.time(), 'snapshot': project.model_dump(), 'scene': scene.model_dump(),
            'prompt': compile_prompt(project, scene), 'review': 'unreviewed',
-           'shots': [{'index': i, 'duration': seconds, 'state': 'queued'} for i, seconds in enumerate(shot_lengths(scene.duration))]}
+           'shots': [{'index': i, 'duration': seconds, 'state': 'queued'} for i, seconds in enumerate([min(5, scene.duration-i) for i in range(0, scene.duration, 5)])]}
     with connection() as db:
         db.execute('BEGIN IMMEDIATE')
         active = db.execute("SELECT id FROM jobs WHERE project_id=? AND scene_id=? AND state IN ('queued','running','submitting','assembling')", (pid, scene.id)).fetchone()
